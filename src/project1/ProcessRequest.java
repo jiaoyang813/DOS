@@ -1,8 +1,11 @@
 package project1;
 
+
 public class ProcessRequest {
 	String client = null;
 	int port = 0;
+	String ID = null;
+	String FileName = null;
 	String result = null;
 	myDB db;
 	ProcessRequest()
@@ -10,6 +13,11 @@ public class ProcessRequest {
 		db = myDB.getInstance();
 	}
 	
+	public void uploadFile(String FileName)
+	{
+		MetaData curState = new MetaData("NULL");
+		db.updateMetaFile(FileName, curState);
+	}
 	
 	public String processInputline(String[] cmd)
 	{
@@ -22,50 +30,156 @@ public class ProcessRequest {
 		//client auto register itself
 		case "REGISTER":
 			client = cmd[1];
-			port = Integer.parseInt(cmd[2]);
 			return "REGISTERED";
 		case "BYE":// client disconnect from server
 			db.closeDB();
 			return "BYE";
-		case "DISCONNECT":
-			return "DISCONNECTED";
-		case "SHOWALL":
-			db.printALL();
+		case "READLOCK":
+			FileName = cmd[1];
+			if(db.checkReadLock(FileName, client))
+				return "already got readlock";
+			if(db.getReadLock(FileName, client))
+			   return "get readlock";
+			else
+				return "cannot get readlock";
+		case "WRITELOCK":
+			FileName = cmd[1];
+			if(db.checkWriteLock(FileName, client))
+				return "already got writelock";
+			if(db.getWriteLock(FileName, client))
+				return "get writelock";
+			else
+				return "cannot get writelock";
+		case "RELEASELOCK":
+			FileName = cmd[1];
+			if(db.checkReadLock(FileName, client)
+					||db.checkWriteLock(FileName, client))
+			{
+				if(db.releaseLock(FileName, client))
+				 return "Lock Released";
+				else
+				 return "cannot release lock";
+			}
+			else
+				return "No lock on file";
+		case "READ":
+			FileName = cmd[1];
+			if(db.checkReadLock(FileName, client))
+			{
+				if(cmd.length != 2)
+					return "Format Mismatch(READ [FILENAME])";
+				FileName = cmd[1];
+				if(!FileName.equals(db.curFileName))
+				{
+					if(!db.loadFile(FileName))
+						return "NO SUCH FILE";
+					else
+						db.printCurFile();	
+				}
+				
+				return "FILE ["+FileName+"] SHOWN ON SERVER";
+			}
+			else
+				return "Require ReadLock";
+		case "WRITE":
+			FileName = cmd[1];
+			if(db.checkWriteLock(FileName, client))
+			{
+				Tuple t = new Tuple(cmd[2],cmd[3],cmd[4]);
+				db.loadFile(FileName);
+				if(db.insert(t))
+				{
+					db.saveCurFile(FileName);
+					return "WRITE DONE";
+				}
+				else
+					return "Conflicts!";
+			}
+			else
+				return "Require WriteLock";
+		case "SHOWDIR":
+			db.printDir();;
 			return "RESULT ON SERVER";
 		case "SHUTDOWN":
-			if(cmd[1].equals("SERVER") )//client make server shut down
+			if(cmd.length == 2&&cmd[1].equals("SERVER") )//client make server shut down
 			{
 				db.closeDB();
 				return "SERVER SHUTDOWN";
 			}
-		case "INSERT": 
-			if(cmd.length != 4)
-				return "Format Mismatch(INSERT STRING STRING STRING)";
-			Tuple t = new Tuple(cmd[1],cmd[2],cmd[3]);
+			else
+				return "Invalclient Command";
+		case "INSERT":
+			if(cmd.length != 5)
+				return "Format Mismatch(INSERT FILENAME STRING STRING STRING)";
+			Tuple t = new Tuple(cmd[2],cmd[3],cmd[4]);
+			FileName = cmd[1];
+			db.loadFile(FileName);
 			if(db.insert(t))
+			{
+				db.saveCurFile(FileName);
 				return "INSERT DONE";
+			}
 			else
 				return "Conflicts!";
 		case "DELETE":
-			if(cmd.length != 4)
-				return "Format Mismatch(INSERT STRING STRING STRING)";
-			Tuple toDel = new Tuple(cmd[1],cmd[2],cmd[3]);
-			if(db.delete(toDel))
-				return "DELETE DONE";
-			else
-				return "NO MATCH";
+			if(cmd.length == 2) //delete filename
+			{
+				FileName = cmd[1];
+				if(db.checkReadLock(FileName, client)|| db.checkWriteLock(FileName, client))
+					return "file locked";
+			   if(db.deleteFile(cmd[1]))
+				   return cmd[1]+ " Deleted";
+			   else
+				   return "Cannot Delete "+ cmd[1];
+			}
+			else if(cmd.length == 5)
+			{	
+				FileName = cmd[1];
+				Tuple toDel = new Tuple(cmd[2],cmd[3],cmd[4]);
+				FileName = cmd[1];
+				if(!FileName.equals(db.curFileName))
+					db.loadFile(FileName);
+				if(db.delete(toDel))
+				{
+					db.saveCurFile(FileName);
+					return "DELETE DONE";
+				}
+				else
+					return "NO MATCH";
+			}
+			return "Format Mismatch(DELETE FILENAME STRING STRING STRING)";
 		case "MATCH":
-			if(cmd.length != 4)
-				return "Format Mismatch(INSERT STRING STRING STRING)";
-			Tuple toMatch = new Tuple(cmd[1],cmd[2],cmd[3]);
+			FileName = cmd[1];
+			if(cmd.length != 5)
+				return "Format Mismatc(MATCH FILENAME STRING STRING STRING)";
+			Tuple toMatch = new Tuple(cmd[2],cmd[3],cmd[4]);
+			FileName = cmd[1];
+			if(!FileName.equals(db.curFileName))
+				db.loadFile(FileName);
+			
 			if(db.search(toMatch)!=null )
+			{
 				return "MATCH: "+ db.search(toMatch).toString();
+			}
 			else 
-				return "NO MATCH";
+				return "NO MATCH";		
+		case "SHOWCURFILE":
+			if(FileName!=null&&!FileName.equals(db.curFileName))
+			{	
+				db.loadFile(FileName);
+				FileName = db.curFileName;
+			}
+			if(db.curFile != null)
+			{
+				db.printCurFile();
+				return "FILE ["+FileName+"] SHOWN ON SERVER";
+			}
+			return "NO FILE";
+		
 		default:
 			break;
 		}
 		
-		return "INVALID INPUT";
+		return "INVALID COMMAND";
 	}
 }

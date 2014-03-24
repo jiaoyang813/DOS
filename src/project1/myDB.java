@@ -2,21 +2,30 @@ package project1;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
-import java.io.Writer;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map.Entry;
 
 //implement a small database to load files on disc
 // and processing simple query
-public class myDB {
-	private static myDB db;
-	HashMap<String, Tuple> dbfile; 
-	
+class myDB {
+	private static myDB db = null;
+	HashMap<String, MetaData> metafile; 
+	HashMap<String, Tuple> curFile;
+	HashMap<String, ArrayList<String>> rmap;
+	HashMap<String,String> wmap;
+	String curFileName = null;
+	String serverName;
 	//singleton pattern
 	public static myDB getInstance()
 	{
@@ -24,52 +33,316 @@ public class myDB {
 			db = new myDB();
 		return db;
 	}
-	
-	private myDB()
+	private myDB() 
 	{
-		//init myDB, load from disc
-		dbfile = new HashMap<String, Tuple>();
-		loadDB(dbfile);
-		
+		//init myDB, create metafile in memory
+		metafile = new HashMap<String, MetaData>();
+		rmap = new HashMap<String, ArrayList<String>>();
+		wmap = new HashMap<String, String>();
+		loadMetaFile();
+		loadLockFile();
 	}
 	
-	public void loadDB(HashMap<String, Tuple> dbfile)
+	public boolean checkReadLock(String FileName, String client)
+	{
+		if(rmap == null || rmap.get(FileName)== null)
+			return false;
+		if(rmap.get(FileName).contains(client))
+			return true;
+		else 
+			return false;
+	}
+	public boolean checkWriteLock(String FileName, String client)
+	{
+		if(wmap == null || wmap.get(FileName) == null)
+			return false;
+		if(wmap.get(FileName).equals(client))
+			return true;
+		else 
+			return false;
+	}
+	
+	public boolean deleteFile(String FileName)
+	{
+		String path = System.getProperty("user.dir");
+		boolean fileExist = new File(System.getProperty("user.dir")+
+		          "/data/"+FileName).isFile();
+		if(!fileExist)
+			return false;
+		else
+		{
+			try{ 
+	    		File file = new File(path+"/data/"+FileName);
+	    		if(metafile.get(FileName).lock.equals("NULL")&&file.delete()){
+	    			metafile.remove(FileName);
+	    			writeMetaFileToDisc();
+	    			return true;
+	    		}else{
+	    			return false;
+	    		}
+	 
+	    	}catch(Exception e){
+	    		e.printStackTrace();
+	    	}
+	    }
+		return false;
+	}
+	
+	public boolean getReadLock(String FileName, String client)
+	{
+		if(metafile.containsKey(FileName))
+		{
+			MetaData temp = metafile.get(FileName);
+			if(!temp.lock.equals("WriteLock"))
+			{
+				if(temp.lock.equals("ReadLock")){
+					ArrayList<String> arrtemp = rmap.get(FileName);
+					if(!arrtemp.contains(client))
+					{	
+						arrtemp.add(client);
+					    writeReadLockFileToDisc();
+					}
+					return true;
+				}
+				else{ // no lock on file
+					temp.lock = "ReadLock";
+					ArrayList<String> arrtemp = new ArrayList<String>();
+					arrtemp.add(client);
+					rmap.put(FileName, arrtemp);
+					writeReadLockFileToDisc();
+					updateMetaFile(FileName, temp);
+					return true;
+				}
+			}
+			else //has write lock on file
+				return false;
+		}
+		// no such file
+		return false;
+	}
+	
+	public boolean getWriteLock(String FileName, String client)
+	{
+		if(metafile.containsKey(FileName))
+		{
+			MetaData temp = metafile.get(FileName);
+			if(temp.lock.equals("ReadLock"))
+			{
+				// itself get the only read lock
+				/*if(rmap.get(FileName).size() == 1  
+						&& rmap.get(FileName).contains(client))
+				{
+					//release readlock
+					rmap.remove(FileName);
+					//get writelock
+					wmap.put(FileName, client);
+					return true;
+				}
+				else*/
+					return false;
+			}
+			else if(temp.lock.equals("WriteLock"))
+			{
+				if(wmap.containsKey(client))
+					return true;
+				else 
+					return false;
+			}
+			else if(temp.lock.equals("NULL"))
+			{	
+				temp.lock = "WriteLock";
+				wmap.put(FileName, client);
+			    writeWriteLockFileToDisc(); 
+				updateMetaFile(FileName, temp);
+				return true;
+			}
+			else
+				return false;
+			
+		}
+		// no such file
+		return false;
+	}
+	
+	//release all lock of filename by client
+	public boolean releaseLock(String FileName, String client)
+	{
+		if(metafile.containsKey(FileName))
+		{
+			MetaData temp = metafile.get(FileName);
+			if(!temp.equals("NULL"))
+			{
+				if(temp.lock.equals("WriteLock"))
+				{
+					if(client.equals(wmap.get(FileName)))
+					{
+						//the right client 
+						temp.lock = "NULL";
+						wmap.remove(FileName);
+						updateMetaFile(FileName, temp);
+						writeWriteLockFileToDisc();
+						return true;
+					}
+					else // not the right client
+						return false;
+				}   
+				else if(temp.lock.equals("ReadLock"))
+				{
+					ArrayList<String> arrtemp = rmap.get(FileName);
+					if(arrtemp.contains(client))
+					{   if(arrtemp.size() == 1) 
+						{	
+							rmap.remove(FileName);
+							temp.lock = "NULL";
+						}
+						else
+						{
+						    arrtemp.remove(client);
+						    rmap.put(FileName, arrtemp);
+						}
+						writeReadLockFileToDisc();
+						updateMetaFile(FileName, temp);
+					}
+					else // no read lock from this client
+						return false;
+					
+				}
+				
+			}
+			// no lock on file
+			return true;	
+		}
+		// no such file
+		return false;    
+	}
+	
+	public void releaseAllLock()
+	{
+		rmap.clear();
+		wmap.clear();
+		writeReadLockFileToDisc();
+		writeWriteLockFileToDisc();
+		String path = System.getProperty("user.dir");
+		try {
+			   BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+			          new FileOutputStream(path+"/data/metafile.txt"), "utf-8"));
+				//write it to disc
+			    Iterator<Entry<String, MetaData>> it = metafile.entrySet().iterator();
+			    while(it.hasNext())
+			    {
+			    	 Entry<String, MetaData> thisEntry = (Entry<String, MetaData>) it.next();
+			    	 MetaData metadata = (MetaData)thisEntry.getValue();
+			    	 String outputLine;
+			    	 metadata.lock = "NULL";
+			    	 outputLine = thisEntry.getKey()+" "+metadata.lock+" "+ metadata.lastModifyTime;
+			    	 writer.write(outputLine);
+			    	 //may add a new line at file bottom 
+			    	 writer.newLine();	 
+			    }
+			    writer.close();
+			} catch (IOException ex) {
+			  // report
+			}
+	}
+	
+	//remove old metadata and put new one
+	public void updateMetaFile(String FileName, MetaData curState)
+	{
+		if(metafile == null)
+			return;
+		Calendar cal = Calendar.getInstance();
+    	cal.getTime();
+    	SimpleDateFormat sdf = new SimpleDateFormat("yyyy.MM.DD-HH:mm:ss");
+    	curState.lastModifyTime = sdf.format(cal.getTime()) ;
+		metafile.put(FileName, curState);
+		writeMetaFileToDisc();
+	}
+	
+	public void loadLockFile()
+	{
+		String path = System.getProperty("user.dir");
+		boolean readlockfileExist = new File(path+"/data/ReadLock.txt").isFile();
+		boolean writelockfileExist = new File(path+"/data/WriteLock.txt").isFile();
+		if(readlockfileExist)
+		{
+			getReadLockFileFromDisc();
+		}
+		else
+			createReadLockFile();
+		
+		if(writelockfileExist)
+			getWriteLockFileFromDisc();
+		else
+			createWriteLockFile();		
+	}
+
+	public void loadMetaFile()
+	{
+		String path = System.getProperty("user.dir");
+		//check metafile exist
+		boolean metafileExist = new File(path+"/data/metafile.txt").isFile();
+		if(metafileExist)
+		{  //if it exists, read it in
+			readMetaFileFromDisc();
+			//update the metafile if new file is added
+			ArrayList<String> curDir = getDirFiles();
+			for(String s: curDir)
+			{
+				if(!metafile.containsKey(s))
+				{
+					Calendar cal = Calendar.getInstance();
+			    	cal.getTime();
+			    	SimpleDateFormat sdf = new SimpleDateFormat("yyyy.MM.DD-HH:mm:ss");
+			        MetaData temp = new MetaData("NULL",sdf.format(cal.getTime()) );
+			        metafile.put(s, temp);
+				}
+			}
+			writeMetaFileToDisc();
+		}
+		else{
+		//create metafile and read it in
+			createMetaFile();
+		}
+	}
+	
+	//load FileName from disc
+	public boolean loadFile(String FileName)
 	{
 		//read file from disc
-		try (BufferedReader inputFile = 
-				new BufferedReader(new FileReader("dbfile.txt")))
+		curFileName = FileName;
+		String path = System.getProperty("user.dir");
+		boolean isfileExist = new File(path+"/data/"+FileName).isFile();
+		if(isfileExist)
 		{
- 
-			String inputLine;
- 
-			while ((inputLine = inputFile.readLine()) != null
-					                  ) {
-				
-				String[] token = parseUserInput(inputLine);
-				//for(String s : token)
-					//System.out.print(s+" ");
-				//System.out.println();
-				// format must match : ID NAME MAJOR
-				Tuple record = new Tuple(token[0], token[1], token[2]);
-				dbfile.put(token[0], record);
- 				//System.out.println(inputLine);
-			}
- 
-		} catch (IOException e) {
-			e.printStackTrace();
-		} 
-		
-		
+			curFile = new HashMap<String, Tuple>();
+			try (BufferedReader inputFile = 
+					new BufferedReader(new FileReader(path+"/data/"+FileName)))// right path!!!!!!!!
+			{
+				String inputLine;
+				while ((inputLine = inputFile.readLine()) != null) {
+					
+					String[] token = parseUserInput(inputLine);
+					Tuple record = new Tuple(token[0], token[1], token[2]);
+					curFile.put(token[0], record);
+				}
+			inputFile.close();
+			} catch (IOException e) {
+				e.printStackTrace();
+			} 
+			return true;
+		}
+		else
+			return false;
 	}
-	
-	public void saveDB()
-	{
-		
-		//save file to disc
+	//save dbfile to disc
+	public void saveCurFile(String FileName)
+	{	
+	//save curFile to disc	
+		String path = System.getProperty("user.dir");
 		try {
 		   BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
-		          new FileOutputStream("dbfile.txt"), "utf-8"));
-		    Iterator<Entry<String, Tuple>> it = dbfile.entrySet().iterator();
+		          new FileOutputStream(path+"/data/"+FileName), "utf-8"));
+		    Iterator<Entry<String, Tuple>> it = curFile.entrySet().iterator();
 		    while(it.hasNext())
 		    {
 		    	 Entry<String, Tuple> thisEntry = (Entry<String, Tuple>) it.next();
@@ -79,38 +352,69 @@ public class myDB {
 		    	 writer.write(outputLine);
 		    	 //may add a new line at file bottom 
 		    	 writer.newLine();	 
-		    }
-		    
-		    
-		    writer.close();
+		    } 
+		curFileName = null;
+		curFile.clear();
+		writer.close();
 		} catch (IOException ex) {
 		  // report
 		}
+		MetaData temp;
+		Calendar cal = Calendar.getInstance();
+    	cal.getTime();
+    	SimpleDateFormat sdf = new SimpleDateFormat("yyyy.MM.DD-HH:mm:ss");
+    	if(rmap.containsKey(FileName))
+            temp = new MetaData( "ReadLock",sdf.format(cal.getTime()) );
+    	else if(wmap.containsKey(FileName))
+    		temp = new MetaData( "WriteLock",sdf.format(cal.getTime()) );
+    	else
+    		temp = new MetaData( "NULL",sdf.format(cal.getTime()) );
+        db.updateMetaFile(FileName, temp);	
 	}
 	
-	public void printALL()
+	public void printDir()
 	{
-		System.out.println("---START OF FILE---");
-		Iterator<Entry<String, Tuple>> it = dbfile.entrySet().iterator();
+		System.out.println("---START OF DIRECTORY---");
+		Iterator<Entry<String, MetaData>> it = metafile.entrySet().iterator();
 		while(it.hasNext())
 	    {
-	    	 Entry<String, Tuple> thisEntry = (Entry<String, Tuple>) it.next();
-	    	 Tuple record = (Tuple)thisEntry.getValue();
-	    	 System.out.println(record.toString());
+	    	 Entry<String, MetaData> thisEntry = (Entry<String, MetaData>) it.next();
+	    	 MetaData record = (MetaData)thisEntry.getValue();
+	    	 System.out.println(thisEntry.getKey()+" "+record.toString());
 	    }
-		
-		System.out.println("---END OF FILE---");
+		System.out.println("---END OF DIRECTORY---");
 		//print result
+	}
+	
+	public void printCurFile()
+	{
+		if(curFileName!=null)
+		{
+			System.out.println("---START OF "+curFileName+"---");
+			Iterator<Entry<String, Tuple>> it = curFile.entrySet().iterator();
+			while(it.hasNext())
+		    {
+		    	 Entry<String, Tuple> thisEntry = (Entry<String, Tuple>) it.next();
+		    	 Tuple record = (Tuple)thisEntry.getValue();
+		    	 System.out.println(record.toString());
+		    }
+			System.out.println("---END OF "+curFileName+"---");
+		}
+		else
+		{
+			System.out.println("NO FILE");
+		}
+		
 	}
 	
 	public Tuple search(Tuple t)
 	{
 		//search
 		String key = t.elem1;
-		if(dbfile.containsKey(key))
+		if(curFile.containsKey(key))
 		{
-			if(dbfile.get(key).isEqual(t))
-				return dbfile.get(key);
+			if(curFile.get(key).isEqual(t))
+				return curFile.get(key);
 			else return null;
 		}
 		else
@@ -123,7 +427,7 @@ public class myDB {
 		//delete tuples
 		if(search(t) != null)
 		{
-			dbfile.remove(t.elem1);
+			curFile.remove(t.elem1);
 			return true;
 		}
 		
@@ -135,19 +439,21 @@ public class myDB {
 	{
 		//insert tuples
 		//check if item conflicts
-		if(dbfile.containsKey(t.elem1))
+		if(curFile.containsKey(t.elem1))
 			return false;
 		else
-			dbfile.put(t.elem1, t);
+			curFile.put(t.elem1, t);
 		return true;
 		//dbfile on disc is OUT OF DATE now
 	}
 	
-	
-	
 	public void closeDB()
 	{
-		saveDB();
+		if(curFileName != null)
+			saveCurFile(curFileName);
+		writeMetaFileToDisc();
+		writeWriteLockFileToDisc();
+		writeReadLockFileToDisc();
 	}
 	
 	public static String[] parseUserInput(String in)
@@ -158,4 +464,230 @@ public class myDB {
 		return result;
 	}
 	
+	public void createMetaFile()
+	{
+		String path = System.getProperty("user.dir");
+		try {
+			   BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+			          new FileOutputStream(path+"/data/metafile.txt"), "utf-8"));
+				ArrayList<String> curDir = getDirFiles();
+				//load it in memory
+				metafile.clear();
+				for(String s : curDir)
+				{
+					Calendar cal = Calendar.getInstance();
+			    	cal.getTime();
+			    	SimpleDateFormat sdf = new SimpleDateFormat("yyyy.MM.DD-HH:mm:ss");
+			        MetaData temp = new MetaData("NULL",sdf.format(cal.getTime()) );
+			        metafile.put(s, temp);
+				}
+				//write it to disc, keep it up to date
+			    Iterator<Entry<String, MetaData>> it = metafile.entrySet().iterator();
+			    while(it.hasNext())
+			    {
+			    	 Entry<String, MetaData> thisEntry = (Entry<String, MetaData>) it.next();
+			    	 MetaData metadata = (MetaData)thisEntry.getValue();
+			    	 String outputLine;
+			    	 outputLine = thisEntry.getKey()+" "+metadata.lock+" "+ metadata.lastModifyTime;
+			    	 writer.write(outputLine);
+			    	 //may add a new line at file bottom 
+			    	 writer.newLine();	 
+			    }
+			    writer.close();
+			} catch (IOException ex) {
+			  // report
+			}
+	}
+	
+	public void createReadLockFile()
+	{
+		String path = System.getProperty("user.dir");
+		try {
+			   BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+			          new FileOutputStream(path+"/data/ReadLock.txt"), "utf-8"));
+			    writer.close();
+			} catch (IOException ex) {
+			  // report
+			}
+	}
+	
+	public void createWriteLockFile()
+	{
+		String path = System.getProperty("user.dir");
+		try {
+			   BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+			          new FileOutputStream(path+"/data/WriteLock.txt"), "utf-8"));
+			    writer.close();
+			} catch (IOException ex) {
+			  // report
+			}
+	}
+	
+	public ArrayList<String> getDirFiles()
+	{
+		String path = System.getProperty("user.dir");
+		ArrayList<String> dir = new ArrayList<String>();
+		File folder = new File(path+"/data/");
+		File[] listOfFiles = folder.listFiles();
+	// save it in metafile in memory
+		for (File file : listOfFiles) {
+		    if (file.isFile()) {
+		        dir.add(file.getName());
+		    }
+		}
+		
+		return dir;
+	
+	}
+	//read metafile.txt to memory 
+	public void readMetaFileFromDisc()
+	{
+		String path = System.getProperty("user.dir");
+		metafile.clear();//clear old data
+		try (BufferedReader inputFile = 
+				new BufferedReader(new FileReader(path+"/data/metafile.txt")))// right path!!!!!!!!
+		{
+			String inputLine;
+			while ((inputLine = inputFile.readLine()) != null) {
+				String[] token = parseUserInput(inputLine);
+				MetaData temp = new MetaData(token[1],token[2]);
+				metafile.put(token[0], temp);
+			}
+			
+			inputFile.close();
+		} catch (IOException ex) {
+			  // report
+			}
+		
+	
+	}
+	
+	public void getReadLockFileFromDisc()
+	{
+		String path = System.getProperty("user.dir");
+		try (BufferedReader inputFile = 
+				new BufferedReader(new FileReader(path+"/data/ReadLock.txt")))// right path!!!!!!!!
+		{
+			String inputLine;
+			while ((inputLine = inputFile.readLine()) != null) {
+				String[] token = parseUserInput(inputLine);
+				for(int i = 1; i < token.length; i++)
+				{
+					if(rmap.containsKey(token[0]))
+					{
+						ArrayList<String> temp = rmap.get(token[0]);
+						temp.add(token[i]);
+						rmap.put(token[0], temp);
+					}
+					else
+					{
+						ArrayList<String> temp = new ArrayList<String>();
+						temp.add(token[i]);
+						rmap.put(token[0], temp);
+					}
+				}
+			}
+			
+			inputFile.close();
+		} catch (IOException ex) {
+			  // report
+			}
+	}
+	
+	public void getWriteLockFileFromDisc()
+	{
+		String path = System.getProperty("user.dir");
+		wmap.clear();
+		try (BufferedReader inputFile = 
+				new BufferedReader(new FileReader(path+"/data/WriteLock.txt")))// right path!!!!!!!!
+		{
+			String inputLine;
+			while ((inputLine = inputFile.readLine()) != null) {
+				String[] token = parseUserInput(inputLine);
+						wmap.put(token[0], token[1]);
+			}
+			
+			inputFile.close();
+		} catch (IOException ex) {
+			  // report
+			}
+	}
+	
+	//write the in-memory metafile to disc
+	public void writeMetaFileToDisc()
+	{
+		String path = System.getProperty("user.dir");
+		try {
+			   BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+			          new FileOutputStream(path+"/data/metafile.txt"), "utf-8"));
+				//write it to disc
+			    Iterator<Entry<String, MetaData>> it = metafile.entrySet().iterator();
+			    while(it.hasNext())
+			    {
+			    	 Entry<String, MetaData> thisEntry = (Entry<String, MetaData>) it.next();
+			    	 MetaData metadata = (MetaData)thisEntry.getValue();
+			    	 String outputLine;
+			    	 outputLine = thisEntry.getKey()+" "+metadata.lock+" "+ metadata.lastModifyTime;
+			    	 writer.write(outputLine);
+			    	 //may add a new line at file bottom 
+			    	 writer.newLine();	 
+			    }
+			    writer.close();
+			} catch (IOException ex) {
+			  // report
+			}
+		
+	}
+	
+	public void writeReadLockFileToDisc()
+	{
+		String path = System.getProperty("user.dir");
+		try {
+			   BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+			          new FileOutputStream(path+"/data/ReadLock.txt"), "utf-8"));
+				//write it to disc
+			    Iterator<Entry<String, ArrayList<String>>> it = rmap.entrySet().iterator();
+			    while(it.hasNext())
+			    {
+			    	Entry<String, ArrayList<String>> thisEntry = (Entry<String, ArrayList<String>>) it.next();
+			    	 String outputLine;
+			    	 ArrayList<String> temp = thisEntry.getValue();
+			    	 outputLine = thisEntry.getKey()+" ";
+			    	 for(String s : temp)
+			    		 outputLine += s+" ";
+			    	 writer.write(outputLine);
+			    	 //may add a new line at file bottom 
+			    	 writer.newLine();	 
+			    }
+			    writer.close();
+			} catch (IOException ex) {
+			  // report
+			}
+	}
+	
+	public void writeWriteLockFileToDisc()
+	{
+		String path = System.getProperty("user.dir");
+		try {
+			   BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+			          new FileOutputStream(path+"/data/WriteLock.txt"), "utf-8"));
+				//write it to disc
+			    Iterator<Entry<String, String>> it = wmap.entrySet().iterator();
+			    while(it.hasNext())
+			    {
+			    	Entry<String, String> thisEntry = (Entry<String, String>) it.next();
+			    	 String outputLine;
+			    	 String temp = thisEntry.getValue();
+			    	 outputLine = thisEntry.getKey()+" "+temp;
+			    	 writer.write(outputLine);
+			    	 //may add a new line at file bottom 
+			    	 writer.newLine();	 
+			    }
+			    writer.close();
+			} catch (IOException ex) {
+			  // report
+			}
+	}
+	
 }
+

@@ -1,0 +1,6 @@
+B.txt ReadLock 2014.02.49-00:17:52
+WriteLock.txt NULL 2014.02.49-00:10:41
+metafile.txt NULL 2014.02.49-00:09:53
+.DS_Store NULL 2014.02.49-00:09:53
+ReadLock.txt NULL 2014.02.49-00:10:41
+config.txt NULL 2014.02.49-00:09:53
